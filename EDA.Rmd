@@ -1,0 +1,10 @@
+---
+title: "DS340W Vessel Classification EDA"
+author: "Joseph Sepich (jps6444), Michael Ruff"
+date: "10/05/2020"
+output:
+  pdf_document:
+    number_sections: no
+---
+
+
