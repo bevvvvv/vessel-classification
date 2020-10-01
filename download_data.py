@@ -13,8 +13,17 @@ except:
 if not os.path.exists('./data'):
     os.mkdir('./data')
 
+days = [31] * 12
+days[2]= 28
+days[4] = 30
+days[6] = 30
+days[9] = 30
+days[11] = 30
 for curr_month in range(1, int(month) + 1):
-    for curr_day in range(1, int(day) + 1):
+    end_day = days[curr_month]
+    if curr_month == int(month):
+        end_day = day
+    for curr_day in range(1, int(end_day) + 1):
         mo = str(curr_month).zfill(2) 
         d = str(curr_day).zfill(2)
         print('Now downloading {}/{}/2019'.format(mo, d))
@@ -37,4 +46,4 @@ if should_unzip.lower() == 'y' or should_unzip.lower() == 'yes':
             with zipfile.ZipFile(path, 'r') as zip_ref:
                 zip_ref.extractall('./data/AIS')
             print('Succesfully unzipped {}'.format(path))
-print('Data has been successfully unzipped!')
+    print('Data has been successfully unzipped!')
