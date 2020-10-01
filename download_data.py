@@ -1,4 +1,5 @@
 import sys
+import os
 import urllib.request
 import zipfile
 
@@ -7,6 +8,10 @@ try:
     day = sys.argv[2].zfill(2)
 except:
     print("Please enter month and day limits: python download_data.py 12 31")
+
+# create data dir
+if not os.path.exists('./data'):
+    os.mkdir('./data')
 
 for curr_month in range(1, int(month) + 1):
     for curr_day in range(1, int(day) + 1):
