@@ -7,4 +7,83 @@ output:
     number_sections: no
 ---
 
+```{r}
+# load libraries
+library(tidyverse)
+library(dbplot)
+library(sparklyr)
+library(sf)
+```
+
+# Load Dataset
+
+```{r}
+# using spark for manipulating large dataset
+# requires spark install (spark::spark_install(version="3.x.x"))
+# requires Java JDK
+config <- spark_config()
+config["sparklyr.shell.driver-memory"] <- "4g"
+config["sparklyr.connect.cores.local"] <- 4
+sc <- spark_connect(master = "local", config = config)
+```
+
+```{r}
+# done with Jan 1 through Jan 5
+ais_df <- spark_read_csv(
+  path = "./data/AIS/*.csv",
+  sc = sc, name = "AIS", delimiter = ",", header=TRUE) 
+ais_df %>%
+  head()
+```
+
+How many ships?
+
+```{r}
+n_vessels <- ais_df %>%
+  select(VesselName) %>%
+  distinct %>%
+  count() %>%
+  collect() %>%
+  unlist %>%
+  as.vector
+n_vessels
+```
+
+There are 14,817 different vessel names in the first 5 days of 2019. What does the distribution of speeds look like?
+
+```{r}
+ais_df %>%
+  filter(SOG >= 0) %>%
+  dbplot_histogram(SOG)
+```
+
+We can see that a majority of the data includes ships that are not actually moving and most ships do not travel over 20 knots in this sample. Note that ships are required to transmit more frequentlt when going at speeds versus loitering. https://www.navcen.uscg.gov/?pageName=AISMessagesA
+
+Where are the ships in our dataset?
+
+```{r}
+location_info <- ais_df %>%
+  group_by(
+    lon_raster = !! db_bin(LON, bins = 150),
+    lat_raster = !! db_bin(LAT, bins = 150)
+  ) %>%
+  summarise(num_reports = n()) %>%
+  collect()
+```
+
+```{r}
+coasts <- st_read("./data/ne_10m_coastline/ne_10m_coastline.shp")
+bbox <- location_info %>%
+  summarize(minLon = min(lon_raster), minLat = min(lat_raster), maxLon = max(lon_raster), maxLat = max(lat_raster))
+location_info %>%
+  ggplot() +
+  geom_sf(data = coasts) +
+  geom_raster(aes(x=lon_raster, y=lat_raster, fill=num_reports)) +
+  xlim(bbox$minLon, bbox$maxLon) +
+  ylim(bbox$minLat, bbox$maxLat) +
+  scale_fill_gradient(low="blue", high="red")
+```
+
+It appears that the ships in this AIS dataset from NOAA are from the North America region with most of the ships concentrated near ports, especially in the gulf and at the tip of Florida.
+
 
