@@ -36,6 +36,8 @@ ais_df %>%
   head()
 ```
 
+# Data Description
+
 How many ships?
 
 ```{r}
@@ -85,5 +87,161 @@ location_info %>%
 ```
 
 It appears that the ships in this AIS dataset from NOAA are from the North America region with most of the ships concentrated near ports, especially in the gulf and at the tip of Florida.
+
+# Base Model
+
+Let's try a simple decision tree to classify our data. The target feature is vessel type. Let's limit our features to position data, speed, and heading.
+
+## Split Data
+
+```{r}
+# pleasure craft and search and rescue
+model_df <- ais_df %>%
+  select(VesselType, LAT, LON, SOG, Heading) %>%
+  filter(VesselType %in% c(37, 51))
+partitions <- model_df %>%
+  sdf_random_split(train=0.75, test=0.25, seed=123)
+```
+
+```{r}
+model_df %>%
+  arrange(desc(VesselType)) %>%
+  head()
+```
+
+## Train Model
+
+```{r}
+vessel_pipeline <- ml_pipeline(sc) %>%
+  ft_dplyr_transformer(
+    partitions$train
+  ) %>%
+  ft_string_indexer("VesselType", "label")
+
+vessel_pipeline_model <- vessel_pipeline %>%
+  ml_fit(partitions$train)
+
+vessel_vector_assembler <- ft_vector_assembler(
+  sc, 
+  input_cols = setdiff(colnames(partitions$train), "VesselType"), 
+  output_col = "features"
+)
+random_forest <- ml_random_forest_classifier(sc,features_col = "features")
+
+# obtain the labels from the fitted StringIndexerModel
+vessel_labels <- vessel_pipeline_model %>%
+  ml_stage("string_indexer") %>%
+  ml_labels()
+
+# IndexToString will convert the predicted numeric values back to class labels
+vessel_index_to_string <- ft_index_to_string(sc, "prediction", "predicted_label", 
+                                      labels = vessel_labels)
+
+# construct a pipeline with these stages
+vessel_prediction_pipeline <- ml_pipeline(
+  vessel_pipeline, # pipeline from previous section
+  vessel_vector_assembler, 
+  random_forest,
+  vessel_index_to_string
+)
+
+# fit to data and make some predictions
+vessel_prediction_model <- vessel_prediction_pipeline %>%
+  ml_fit(partitions$train)
+vessel_predictions <- vessel_prediction_model %>%
+  ml_transform(partitions$test)
+vessel_predictions %>%
+  select(VesselType, label:predicted_label) %>%
+  glimpse()
+```
+
+### Training Accuracy
+
+```{r}
+vessel_prediction_model %>%
+  ml_transform(partitions$train) %>%
+  ml_binary_classification_evaluator()
+```
+
+## Test Accuracy
+
+```{r}
+vessel_prediction_model %>%
+  ml_transform(partitions$test) %>%
+  ml_binary_classification_evaluator()
+```
+
+## Decision Tree
+
+```{r}
+library(igraph)
+
+ml_stage(vessel_prediction_model, "random_forest") %>% 
+  ml_save("/tmp/model", overwrite = TRUE)
+
+rf_spec <- spark_read_parquet(sc, "rf", "/tmp/model/data/")
+
+rf_spec %>% 
+  spark_dataframe() %>% 
+  invoke("schema") %>% invoke("treeString") %>% 
+  cat(sep = "\n")
+
+meta <- vessel_predictions %>% 
+    select(features) %>% 
+    spark_dataframe() %>% 
+    invoke("schema") %>% invoke("apply", 0L) %>% 
+    invoke("metadata") %>% 
+    invoke("getMetadata", "ml_attr") %>% 
+    invoke("getMetadata", "attrs") %>% 
+    invoke("json") %>%
+    jsonlite::fromJSON() %>% 
+    dplyr::bind_rows() %>% 
+    copy_to(sc, .) %>%
+    rename(featureIndex = idx)
+
+labels <- tibble(prediction = seq_along(vessel_labels) - 1, label = vessel_labels) %>%
+  copy_to(sc, .)
+
+full_rf_spec <- rf_spec %>% 
+  spark_dataframe() %>% 
+  invoke("selectExpr", list("treeID", "nodeData.*", "nodeData.split.*")) %>% 
+  sdf_register() %>% 
+  select(-split, -impurityStats) %>% 
+  left_join(meta, by = "featureIndex") %>% 
+  left_join(labels, by = "prediction")
+
+gframe <- full_rf_spec %>% 
+  filter(treeID == 0) %>%   # Take the first tree
+  mutate(
+    leftCategoriesOrThreshold = ifelse(
+      size(leftCategoriesOrThreshold) == 1,
+      # Continuous variable case
+      concat("<= ", round(concat_ws("", leftCategoriesOrThreshold), 3)),
+      # Categorical variable case. Decoding variables might be involved
+      # but can be achieved if needed, using column metadata or indexer labels
+      concat("in {", concat_ws(",", leftCategoriesOrThreshold), "}")
+    ),
+    name = coalesce(name, label)) %>% 
+ select(
+   id, label, impurity, gain, 
+   leftChild, rightChild, leftCategoriesOrThreshold, name) %>%
+ collect()
+
+vertices <- gframe %>% select(-label) %>% rename(label = name, name = id)
+
+edges <- gframe %>%
+  transmute(from = id, to = leftChild, label = leftCategoriesOrThreshold) %>% 
+  union_all(gframe %>% select(from = id, to = rightChild)) %>% 
+  filter(to != -1)
+
+g <- igraph::graph_from_data_frame(edges, vertices = vertices)
+
+plot(
+  g, layout = layout_as_tree(g, root = c(1)),
+  vertex.shape = "rectangle",  vertex.size = 45, vertex.label.cex = 1,
+  edge.label.x = c(0.5, -0.1, 0.4, 0, -0.55), edge.label.y = c(0.85, 0.45, 0.05, -0.35, -0.75))
+```
+
+
 
 
