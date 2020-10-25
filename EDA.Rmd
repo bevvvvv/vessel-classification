@@ -55,6 +55,11 @@ There are 14,817 different vessel names in the first 5 days of 2019. What does t
 
 ```{r}
 ais_df %>%
+  dbplot_histogram(VesselType)
+```
+
+```{r}
+ais_df %>%
   filter(SOG >= 0) %>%
   dbplot_histogram(SOG)
 ```
