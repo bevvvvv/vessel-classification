@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ---
 title: "DS340W Vessel Classification EDA"
 author: "Joseph Sepich (jps6444), Michael Ruff"
@@ -245,3 +246,257 @@ plot(
 
 
 
+=======
+---
+title: "DS340W Vessel Classification EDA"
+author: "Joseph Sepich (jps6444), Michael Ruff"
+date: "10/05/2020"
+output:
+  pdf_document:
+    number_sections: no
+---
+
+```{r}
+# load libraries
+library(tidyverse)
+library(dbplot)
+library(sparklyr)
+library(sf)
+```
+
+# Load Dataset
+
+```{r}
+# using spark for manipulating large dataset
+# requires spark install (spark::spark_install(version="3.x.x"))
+# requires Java JDK
+config <- spark_config()
+config["sparklyr.shell.driver-memory"] <- "4g"
+config["sparklyr.connect.cores.local"] <- 4
+sc <- spark_connect(master = "local", config = config)
+```
+
+```{r}
+# done with Jan 1 through Jan 5
+ais_df <- spark_read_csv(
+  path = "./data/AIS/*.csv",
+  sc = sc, name = "AIS", delimiter = ",", header=TRUE) 
+ais_df %>%
+  head()
+```
+
+# Data Description
+
+How many ships?
+
+```{r}
+n_vessels <- ais_df %>%
+  select(VesselName) %>%
+  distinct %>%
+  count() %>%
+  collect() %>%
+  unlist %>%
+  as.vector
+n_vessels
+```
+
+There are 14,817 different vessel names in the first 5 days of 2019. What does the distribution of speeds look like?
+
+```{r}
+ais_df %>%
+  dbplot_histogram(VesselType)
+```
+
+```{r}
+ais_df %>%
+  filter(SOG >= 0) %>%
+  dbplot_histogram(SOG)
+```
+
+We can see that a majority of the data includes ships that are not actually moving and most ships do not travel over 20 knots in this sample. Note that ships are required to transmit more frequentlt when going at speeds versus loitering. https://www.navcen.uscg.gov/?pageName=AISMessagesA
+
+Where are the ships in our dataset?
+
+```{r}
+location_info <- ais_df %>%
+  group_by(
+    lon_raster = !! db_bin(LON, bins = 150),
+    lat_raster = !! db_bin(LAT, bins = 150)
+  ) %>%
+  summarise(num_reports = n()) %>%
+  collect()
+```
+
+```{r}
+coasts <- st_read("./data/ne_10m_coastline/ne_10m_coastline.shp")
+bbox <- location_info %>%
+  summarize(minLon = min(lon_raster), minLat = min(lat_raster), maxLon = max(lon_raster), maxLat = max(lat_raster))
+location_info %>%
+  ggplot() +
+  geom_sf(data = coasts) +
+  geom_raster(aes(x=lon_raster, y=lat_raster, fill=num_reports)) +
+  xlim(bbox$minLon, bbox$maxLon) +
+  ylim(bbox$minLat, bbox$maxLat) +
+  scale_fill_gradient(low="blue", high="red")
+```
+
+It appears that the ships in this AIS dataset from NOAA are from the North America region with most of the ships concentrated near ports, especially in the gulf and at the tip of Florida.
+
+# Base Model
+
+Let's try a simple decision tree to classify our data. The target feature is vessel type. Let's limit our features to position data, speed, and heading.
+
+## Split Data
+
+```{r}
+# pleasure craft and search and rescue
+model_df <- ais_df %>%
+  select(VesselType, LAT, LON, SOG, Heading) %>%
+  filter(VesselType %in% c(37, 51))
+partitions <- model_df %>%
+  sdf_random_split(train=0.75, test=0.25, seed=123)
+```
+
+```{r}
+model_df %>%
+  arrange(desc(VesselType)) %>%
+  head()
+```
+
+## Train Model
+
+```{r}
+vessel_pipeline <- ml_pipeline(sc) %>%
+  ft_dplyr_transformer(
+    partitions$train
+  ) %>%
+  ft_string_indexer("VesselType", "label")
+
+vessel_pipeline_model <- vessel_pipeline %>%
+  ml_fit(partitions$train)
+
+vessel_vector_assembler <- ft_vector_assembler(
+  sc, 
+  input_cols = setdiff(colnames(partitions$train), "VesselType"), 
+  output_col = "features"
+)
+random_forest <- ml_random_forest_classifier(sc,features_col = "features")
+
+# obtain the labels from the fitted StringIndexerModel
+vessel_labels <- vessel_pipeline_model %>%
+  ml_stage("string_indexer") %>%
+  ml_labels()
+
+# IndexToString will convert the predicted numeric values back to class labels
+vessel_index_to_string <- ft_index_to_string(sc, "prediction", "predicted_label", 
+                                      labels = vessel_labels)
+
+# construct a pipeline with these stages
+vessel_prediction_pipeline <- ml_pipeline(
+  vessel_pipeline, # pipeline from previous section
+  vessel_vector_assembler, 
+  random_forest,
+  vessel_index_to_string
+)
+
+# fit to data and make some predictions
+vessel_prediction_model <- vessel_prediction_pipeline %>%
+  ml_fit(partitions$train)
+vessel_predictions <- vessel_prediction_model %>%
+  ml_transform(partitions$test)
+vessel_predictions %>%
+  select(VesselType, label:predicted_label) %>%
+  glimpse()
+```
+
+### Training Accuracy
+
+```{r}
+vessel_prediction_model %>%
+  ml_transform(partitions$train) %>%
+  ml_binary_classification_evaluator()
+```
+
+## Test Accuracy
+
+```{r}
+vessel_prediction_model %>%
+  ml_transform(partitions$test) %>%
+  ml_binary_classification_evaluator()
+```
+
+## Decision Tree
+
+```{r}
+library(igraph)
+
+ml_stage(vessel_prediction_model, "random_forest") %>% 
+  ml_save("/tmp/model", overwrite = TRUE)
+
+rf_spec <- spark_read_parquet(sc, "rf", "/tmp/model/data/")
+
+rf_spec %>% 
+  spark_dataframe() %>% 
+  invoke("schema") %>% invoke("treeString") %>% 
+  cat(sep = "\n")
+
+meta <- vessel_predictions %>% 
+    select(features) %>% 
+    spark_dataframe() %>% 
+    invoke("schema") %>% invoke("apply", 0L) %>% 
+    invoke("metadata") %>% 
+    invoke("getMetadata", "ml_attr") %>% 
+    invoke("getMetadata", "attrs") %>% 
+    invoke("json") %>%
+    jsonlite::fromJSON() %>% 
+    dplyr::bind_rows() %>% 
+    copy_to(sc, .) %>%
+    rename(featureIndex = idx)
+
+labels <- tibble(prediction = seq_along(vessel_labels) - 1, label = vessel_labels) %>%
+  copy_to(sc, .)
+
+full_rf_spec <- rf_spec %>% 
+  spark_dataframe() %>% 
+  invoke("selectExpr", list("treeID", "nodeData.*", "nodeData.split.*")) %>% 
+  sdf_register() %>% 
+  select(-split, -impurityStats) %>% 
+  left_join(meta, by = "featureIndex") %>% 
+  left_join(labels, by = "prediction")
+
+gframe <- full_rf_spec %>% 
+  filter(treeID == 0) %>%   # Take the first tree
+  mutate(
+    leftCategoriesOrThreshold = ifelse(
+      size(leftCategoriesOrThreshold) == 1,
+      # Continuous variable case
+      concat("<= ", round(concat_ws("", leftCategoriesOrThreshold), 3)),
+      # Categorical variable case. Decoding variables might be involved
+      # but can be achieved if needed, using column metadata or indexer labels
+      concat("in {", concat_ws(",", leftCategoriesOrThreshold), "}")
+    ),
+    name = coalesce(name, label)) %>% 
+ select(
+   id, label, impurity, gain, 
+   leftChild, rightChild, leftCategoriesOrThreshold, name) %>%
+ collect()
+
+vertices <- gframe %>% select(-label) %>% rename(label = name, name = id)
+
+edges <- gframe %>%
+  transmute(from = id, to = leftChild, label = leftCategoriesOrThreshold) %>% 
+  union_all(gframe %>% select(from = id, to = rightChild)) %>% 
+  filter(to != -1)
+
+g <- igraph::graph_from_data_frame(edges, vertices = vertices)
+
+plot(
+  g, layout = layout_as_tree(g, root = c(1)),
+  vertex.shape = "rectangle",  vertex.size = 45, vertex.label.cex = 1,
+  edge.label.x = c(0.5, -0.1, 0.4, 0, -0.55), edge.label.y = c(0.85, 0.45, 0.05, -0.35, -0.75))
+```
+
+
+
+
+>>>>>>> f430e0e12b41a3acc1ac4cf72b02ef7e4dcbdba1
