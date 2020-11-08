@@ -16,14 +16,14 @@ num_ships = len(df.MMSI.unique())
 #######################################################################
 
 print('Converting date timestamp...')
-df['BaseDateTime'] = pd.to_datetime(df['BaseDateTime'], format="%Y-%m-%dT%H:%M:S")
+df['BaseDateTime'] = pd.to_datetime(df['BaseDateTime'].astype(str))#, format="%Y-%m-%dT%H:%M:S")
 
 #######################################################################
 ######### RUN VF METHODS
 #######################################################################
 
 print('Running voyage_finder...')
-df = remove_dupes(df)
+#df = remove_dupes(df)
 df = run_vf(df)
 df = assign_id(df)
 print('Found voyages!')
