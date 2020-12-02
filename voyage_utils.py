@@ -88,3 +88,19 @@ def assign_id(df):
     df['BaseDateTime'] = pd.to_datetime(df['BaseDateTime'], unit='ms')
 
     return df
+
+def calc_accel(df, speed_col='speed_knots'):
+    df[speed_col] = df[speed_col].fillna(0)
+    # diff over 2
+    df[['lead_speed']] = df.sort_values(by='BaseDateTime').groupby(['MMSI'])[[speed_col]].shift(-1)
+    df['acceleration'] = (df['lead_speed'] - df[speed_col]) / df['delta_sec']
+    df = df.drop(['lead_speed'],axis=1)
+    return df
+
+def calc_bearing_rate(df, bearing_col='Heading'):
+    df[bearing_col] = df[bearing_col].fillna(0)
+    # diff over 2
+    df[['lead_bearing']] = df.sort_values(by='BaseDateTime').groupby(['MMSI'])[[bearing_col]].shift(-1)
+    df['bearing_rate'] = (df['lead_bearing'] - df[bearing_col]) / df['delta_sec']
+    df = df.drop(['lead_bearing'],axis=1)
+    return df
