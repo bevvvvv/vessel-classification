@@ -1,6 +1,6 @@
 import pandas as pd
 
-from voyage_utils import voyage_finder, run_vf, assign_id, remove_dupes
+from voyage_utils import voyage_finder, run_vf, assign_id, remove_dupes, calc_accel, calc_bearing_rate
 
 #######################################################################
 ######### READ DATA
@@ -31,8 +31,6 @@ print('Found voyages!')
 #######################################################################
 ######### WRITE TO NEW FILE
 #######################################################################
-
-df.to_csv('./data/AIS_voyage_01_01.csv')
 
 print('Point difference: ', df.shape[0] - num_points)
 print('Ship difference: ', len(df.MMSI.unique()) - num_ships)
