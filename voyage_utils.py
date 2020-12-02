@@ -89,7 +89,7 @@ def assign_id(df):
 
     return df
 
-def calc_accel(df, speed_col='speed_knots'):
+def calc_accel(df, speed_col='SOG'):
     df[speed_col] = df[speed_col].fillna(0)
     # diff over 2
     df[['lead_speed']] = df.sort_values(by='BaseDateTime').groupby(['MMSI'])[[speed_col]].shift(-1)

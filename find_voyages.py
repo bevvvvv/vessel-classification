@@ -32,6 +32,8 @@ for f in files:
     #df = remove_dupes(df)
     df = run_vf(df)
     df = assign_id(df)
+    df = calc_accel(df)
+    df = calc_bearing_rate(df)
     print('Found voyages!')
 
     #######################################################################
